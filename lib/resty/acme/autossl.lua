@@ -24,7 +24,7 @@ local default_config = {
   -- the account email to register
   account_email = nil,
   -- number of certificate cache, per type
-  cache_size = 100,
+  cache_size = 100000,
   domain_key_paths = {
     -- the global domain RSA private key
     rsa = nil,
@@ -292,6 +292,8 @@ end
 
 function AUTOSSL.check_renew(premature)
 
+  log(ngx_DEBUG,"Starting the domain renew check")
+
   -- According to docs in https://github.com/openresty/lua-nginx-module#ngxtimerat, a premature
   -- timer expiration occurs when the nginx worker is trying to shut down. Here we are skipping
   -- running this on Nginx worker shutdown, as it can be problematic
@@ -306,14 +308,25 @@ function AUTOSSL.check_renew(premature)
   end
 
   local keys = AUTOSSL.storage:list(domain_cache_key_prefix)
+  log(ngx_DEBUG,"Found: "..tostring(table.getn(keys)) )
+  ngx.update_time()
+  local durseek=ngx.now()-now
+  log(ngx_DEBUG,"Found in : "..tostring(durseek) )
   for _, key in ipairs(keys) do
+
     local serialized, err = AUTOSSL.storage:get(key)
     if err or not serialized then
-      log(ngx_WARN, "failed to renew cert, expected domain not found in storage or err " .. (err or "nil"))
+      log(ngx_WARN, "failed to renew cert, expected domain["..key.."] not found in storage or err " .. (err or "nil"))
       goto continue
     end
 
-    local deserialized = json.decode(serialized)
+    local ok, deserialized = pcall(json.decode, serialized)
+
+    if not ok then
+      log(ngx_ERR, "failed to deserialize the certificate content: "..key)
+      goto continue
+    end
+
     if not deserialized.cert then
       log(ngx_WARN, "failed to read existing cert from storage, skipping")
       goto continue
@@ -339,6 +352,11 @@ function AUTOSSL.check_renew(premature)
 
 ::continue::
   end
+
+  ngx.update_time()
+  local dur=ngx.now()-now
+  log(ngx_DEBUG,"End domain renew check. Execution time: "..tostring(dur) )
+
 end
 
 function AUTOSSL.init(autossl_config, acme_config)
