@@ -58,6 +58,11 @@ local default_config = {
   challenge_start_delay = 0,
   -- if true, the request to nginx waits until the cert has been generated and it is used right away
   blocking = false,
+
+  -- this function is called when a certificate is successfully obtained
+  certificate_renew_started_callback = nil,
+  certificate_renew_ended_callback = nil,
+  certificate_update_callback = nil
 }
 
 local domain_pkeys = {}
@@ -65,6 +70,9 @@ local domain_pkeys = {}
 local domain_key_types, domain_key_types_count
 local domain_whitelist, domain_whitelist_callback
 local failure_cooloff_callback
+local certificate_update_callback
+local certificate_renew_started_callback
+local certificate_renew_ended_callback
 
 --[[
   certs_cache = {
@@ -87,6 +95,11 @@ local certificate_failure_count_prefix = "failed_attempts:"
 
 function AUTOSSL.get_cert_from_cache(domain, typ)
   return certs_cache[typ]:get(domain)
+end
+
+-- call callback from config
+local function call_callback(callback,params)
+
 end
 
 -- get cert from storage
@@ -205,6 +218,7 @@ local function update_cert_handler(data)
     cert = cert,
     type = typ,
     updated = ngx.now(),
+    not_after = cert:get_lifetime()
   })
 
   local err = AUTOSSL.storage:set(domain_cache_key, serialized)
@@ -292,7 +306,7 @@ end
 
 function AUTOSSL.check_renew(premature)
 
-  log(ngx_DEBUG,"Starting the domain renew check")
+  log(ngx_INFO,"Starting the domain renew check")
 
   -- According to docs in https://github.com/openresty/lua-nginx-module#ngxtimerat, a premature
   -- timer expiration occurs when the nginx worker is trying to shut down. Here we are skipping
@@ -308,32 +322,45 @@ function AUTOSSL.check_renew(premature)
   end
 
   local keys = AUTOSSL.storage:list(domain_cache_key_prefix)
-  log(ngx_DEBUG,"Found: "..tostring(table.getn(keys)) )
-  ngx.update_time()
-  local durseek=ngx.now()-now
-  log(ngx_DEBUG,"Found in : "..tostring(durseek) )
-  for _, key in ipairs(keys) do
 
+  if certificate_renew_started_callback then
+    ngx.update_time()
+    certificate_renew_started_callback(table.getn(keys),ngx.now()-now)
+  end
+
+  local count_renew = table.getn(keys)
+  local count_fail = 0
+  local count_success = 0
+  local count_ignored = 0
+
+  for _, key in ipairs(keys) do
+    local domain = string.gmatch(key, ":(.[^:]+)$")()
     local serialized, err = AUTOSSL.storage:get(key)
     if err or not serialized then
-      log(ngx_WARN, "failed to renew cert, expected domain["..key.."] not found in storage or err " .. (err or "nil"))
+      log(ngx_ERR, "failed to renew cert, expected domain["..key.."] not found in storage or err " .. (err or "nil"))
+      count_fail = count_fail+1
       goto continue
     end
 
     local ok, deserialized = pcall(json.decode, serialized)
-
     if not ok then
       log(ngx_ERR, "failed to deserialize the certificate content: "..key)
+      count_fail = count_fail+1
       goto continue
     end
 
-    if not deserialized.cert then
-      log(ngx_WARN, "failed to read existing cert from storage, skipping")
-      goto continue
+    local _, not_after
+    if not deserialized.not_after then
+        if not deserialized.cert then
+          log(ngx_ERR, "failed to read existing cert from storage, skipping")
+          goto continue
+        end
+        local cert = openssl.x509.new(deserialized.cert)
+        _, not_after = cert:get_lifetime()
+    else
+        not_after=tonumber(deserialized.not_after)
     end
 
-    local cert = openssl.x509.new(deserialized.cert)
-    local _, not_after = cert:get_lifetime()
     if not_after - now < AUTOSSL.config.renew_threshold then
       local domain = deserialized.domain
       local err = AUTOSSL.update_cert({
@@ -342,21 +369,34 @@ function AUTOSSL.check_renew(premature)
         tries = 0,
         type = deserialized.type,
       })
-
       if err then
         log(ngx_ERR, "failed to renew certificate for domain ", domain, " error: ", err)
+        count_fail = count_fail+1
       else
         log(ngx_INFO, "successfully renewed ", deserialized.type, " cert for domain ", domain)
+        count_success = count_success+1
       end
-    end
 
+      if certificate_update_callback then
+        certificate_update_callback(domain, err)
+      end
+    else
+      count_ignored=count_ignored+1
+    end
 ::continue::
   end
 
-  ngx.update_time()
-  local dur=ngx.now()-now
-  log(ngx_DEBUG,"End domain renew check. Execution time: "..tostring(dur) )
+  if certificate_renew_ended_callback then
+    ngx.update_time()
+    certificate_renew_ended_callback(ngx.now()-now,count_renew,count_success,count_fail,count_ignored)
+  end
+end
 
+function validate_callback(callback,callback_name)
+  if callback and type(callback) ~= "function" then
+    error(callback_name.." must be a function, got " .. type(callback))
+  end
+  return callback;
 end
 
 function AUTOSSL.init(autossl_config, acme_config)
@@ -406,20 +446,17 @@ function AUTOSSL.init(autossl_config, acme_config)
       domain_whitelist[w] = true
     end
   end
-  domain_whitelist_callback = autossl_config.domain_whitelist_callback
-  if domain_whitelist_callback and type(domain_whitelist_callback) ~= "function" then
-    error("domain_whitelist_callback must be a function, got " .. type(domain_whitelist_callback))
-  end
 
   if not domain_whitelist and not domain_whitelist_callback then
     log(ngx.WARN, "neither domain_whitelist or domain_whitelist_callback is defined, this may cause",
-                      "security issues as all SNI will trigger a creation of certificate")
+            "security issues as all SNI will trigger a creation of certificate")
   end
 
-  failure_cooloff_callback = autossl_config.failure_cooloff_callback
-  if failure_cooloff_callback and type(failure_cooloff_callback) ~= "function" then
-    error("failure_cooloff_callback must be a function, got " .. type(failure_cooloff_callback))
-  end
+  domain_whitelist_callback =validate_callback(autossl_config.domain_whitelist_callback,"domain_whitelist_callback")
+  failure_cooloff_callback =validate_callback(autossl_config.failure_cooloff_callback,"failure_cooloff_callback")
+  certificate_update_callback =validate_callback(autossl_config.certificate_update_callback,"certificate_update_callback")
+  certificate_renew_started_callback =validate_callback(autossl_config.certificate_renew_started_callback,"certificate_renew_started_callback")
+  certificate_renew_ended_callback =validate_callback(autossl_config.certificate_renew_ended_callback,"certificate_renew_ended_callback")
 
   if not autossl_config.failure_cooloff and not failure_cooloff_callback then
     ngx.log(ngx.WARN, "neither failure_cooloff or failure_cooloff_callback is defined, ",
