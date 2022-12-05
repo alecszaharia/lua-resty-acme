@@ -207,9 +207,15 @@ local function update_cert_handler(data)
     log(ngx_INFO, ngx.now() - t,  "s spent in creating new ", typ, " private key")
   end
   local cert, err = AUTOSSL.client:order_certificate(pkey, domain)
+
   if err then
     log(ngx_ERR, "error updating cert for ", domain, " err: ", err)
     return err
+  end
+
+  local life_time = ngx.now()
+  if cert then
+    life_time = cert:get_lifetime()
   end
 
   local serialized = json.encode({
@@ -218,7 +224,7 @@ local function update_cert_handler(data)
     cert = cert,
     type = typ,
     updated = ngx.now(),
-    not_after = cert:get_lifetime()
+    not_after = life_time
   })
 
   local err = AUTOSSL.storage:set(domain_cache_key, serialized)
@@ -452,11 +458,11 @@ function AUTOSSL.init(autossl_config, acme_config)
             "security issues as all SNI will trigger a creation of certificate")
   end
 
-  domain_whitelist_callback =validate_callback(autossl_config.domain_whitelist_callback,"domain_whitelist_callback")
-  failure_cooloff_callback =validate_callback(autossl_config.failure_cooloff_callback,"failure_cooloff_callback")
-  certificate_update_callback =validate_callback(autossl_config.certificate_update_callback,"certificate_update_callback")
-  certificate_renew_started_callback =validate_callback(autossl_config.certificate_renew_started_callback,"certificate_renew_started_callback")
-  certificate_renew_ended_callback =validate_callback(autossl_config.certificate_renew_ended_callback,"certificate_renew_ended_callback")
+  domain_whitelist_callback = validate_callback(autossl_config.domain_whitelist_callback,"domain_whitelist_callback")
+  failure_cooloff_callback = validate_callback(autossl_config.failure_cooloff_callback,"failure_cooloff_callback")
+  certificate_update_callback = validate_callback(autossl_config.certificate_update_callback,"certificate_update_callback")
+  certificate_renew_started_callback = validate_callback(autossl_config.certificate_renew_started_callback,"certificate_renew_started_callback")
+  certificate_renew_ended_callback = validate_callback(autossl_config.certificate_renew_ended_callback,"certificate_renew_ended_callback")
 
   if not autossl_config.failure_cooloff and not failure_cooloff_callback then
     ngx.log(ngx.WARN, "neither failure_cooloff or failure_cooloff_callback is defined, ",
