@@ -216,7 +216,7 @@ local function update_cert_handler(data)
   local _, not_after
   if cert then
     local dcert = openssl.x509.new(cert)
-    _, not_after = cert:get_lifetime()
+    _, not_after = dcert:get_lifetime()
   end
 
   local serialized = json.encode({
