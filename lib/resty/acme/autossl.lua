@@ -213,13 +213,19 @@ local function update_cert_handler(data)
     return err
   end
 
+  local _, not_after
+  if cert then
+    local dcert = openssl.x509.new(cert)
+    _, not_after = cert:get_lifetime()
+  end
+
   local serialized = json.encode({
     domain = domain,
     pkey = pkey,
     cert = cert,
     type = typ,
     updated = ngx.now(),
-    not_after = cert:get_lifetime()
+    not_after = not_after
   })
 
   local err = AUTOSSL.storage:set(domain_cache_key, serialized)
