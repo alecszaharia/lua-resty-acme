@@ -498,9 +498,16 @@ function AUTOSSL.init(autossl_config, acme_config)
   AUTOSSL.client = client
   AUTOSSL.client_initialized = false
   AUTOSSL.config = autossl_config
+
+  AUTOSSL.init_storage()
 end
 
-function AUTOSSL.init_worker()
+function AUTOSSL.init_storage()
+
+  if AUTOSSL.storage then
+    return AUTOSSL.storage
+  end
+
   -- TODO: catch error and return gracefully
   local storagemod = require(AUTOSSL.config.storage_adapter)
   local storage, err = storagemod.new(AUTOSSL.config.storage_config)
@@ -508,6 +515,11 @@ function AUTOSSL.init_worker()
     error("failed to initialize storage: " .. err)
   end
   AUTOSSL.storage = storage
+end
+
+function AUTOSSL.init_worker()
+
+  AUTOSSL.init_storage()
 
   if not AUTOSSL.config.account_key_path then
     local account_key, err = AUTOSSL.load_account_key_storage()
