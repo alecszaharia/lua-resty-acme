@@ -127,6 +127,7 @@ function _M:add(k, v, ttl)
   local f = regulate_filename(self.dir, k)
 
   local check = check_expiration(f)
+
   if check then
     return "exists"
   end
@@ -149,10 +150,12 @@ function _M:set(k, v, ttl)
   os.execute('mkdir -p '..p)
 
   local file, err = io.open(f, "wb")
+
   if err then
     return err
   end
   local _, err = file:write(ttl .. TTL_SEPERATOR .. v)
+
   if err then
     return err
   end
